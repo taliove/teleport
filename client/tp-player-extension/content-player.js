@@ -4,7 +4,7 @@
 // How it works:
 //   1. Runs at document_start (before original page loads)
 //   2. Replaces the entire document with our player HTML
-//   3. Injects pako.min.js, rle.js, player-bundle.js from extension resources
+//   3. Injects pako.min.js, rle.js, and split JS modules from extension resources
 //   4. Scripts run in the page's main world → fetch() is same-origin → cookies included
 //
 // This avoids all CORS/cookie issues because the page URL stays on the Teleport server.
@@ -49,12 +49,24 @@
         // -- Body (player HTML) --
         document.body.innerHTML = getPlayerHTML();
 
-        // -- Scripts (load in order: pako → rle → bundle) --
-        loadScript(extBase + 'lib/pako.min.js', function () {
-            loadScript(extBase + 'lib/rle.js', function () {
-                loadScript(extBase + 'js/player-bundle.js');
-            });
-        });
+        // -- Scripts (load in order: libs → constants → modules → app) --
+        function loadScripts(srcs, idx) {
+            if (idx >= srcs.length) return;
+            loadScript(srcs[idx], function() { loadScripts(srcs, idx + 1); });
+        }
+        loadScripts([
+            extBase + 'lib/pako.min.js',
+            extBase + 'lib/rle.js',
+            extBase + 'js/constants.js',
+            extBase + 'js/downloader.js',
+            extBase + 'js/parser.js',
+            extBase + 'js/decoder.js',
+            extBase + 'js/image-cache.js',
+            extBase + 'js/renderer.js',
+            extBase + 'js/player.js',
+            extBase + 'js/zoom.js',
+            extBase + 'js/app.js'
+        ], 0);
     }
 
     function appendMeta(attr, name, content) {
