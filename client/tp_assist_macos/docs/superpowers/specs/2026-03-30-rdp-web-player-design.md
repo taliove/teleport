@@ -26,16 +26,20 @@ This eliminates the need for TP-Assist, tp-player.app, and any native installati
 ```
 Browser Player
     │
-    ├─ fetch /audit/get-file?f=tp-rdp.tpr  → Parse header (resolution, duration, .tpd count)
-    ├─ fetch /audit/get-file?f=tp-rdp.tpk  → Parse keyframe index (for seek)
-    └─ fetch /audit/get-file?f=tp-rdp-N.tpd → Stream-download data packets
+    │  All API calls use: /audit/get-file?act=read&type=rdp&rid={rid}&f={filename}
+    │  File size query:   /audit/get-file?act=size&type=rdp&rid={rid}&f={filename}
+    │
+    ├─ fetch ...&f=tp-rdp.tpr     → Parse header (resolution, duration, .tpd count)
+    ├─ fetch ...&f=tp-rdp.tpk     → Parse keyframe index (for seek)
+    └─ fetch ...&f=tp-rdp-N.tpd   → Stream-download data packets (N is 1-indexed)
           │
           ▼
-    JS Binary Parser (DataView / ArrayBuffer)
+    JS Binary Parser (DataView / ArrayBuffer, little-endian)
           │
-          ├─ 0x13 RDP_IMAGE  → RLE decompress (rle.js WASM) → Canvas putImageData
-          ├─ 0x12 RDP_POINTER → Draw cursor overlay
-          └─ 0x14 RDP_KEYFRAME → zlib decompress → Full-screen render (seek target)
+          ├─ 0x13 RDP_IMAGE    → zlib decompress (if zip_len>0) → RLE decompress (if format=1) → Canvas putImageData
+          │                      format=2 (TS_RDP_IMG_ALT): look up image cache by index, no pixel data in packet
+          ├─ 0x12 RDP_POINTER  → Draw cursor overlay
+          └─ 0x14 RDP_KEYFRAME → zlib decompress → RGB565/RGB555 → RGBA → Full-screen render
 ```
 
 ### File Structure
@@ -57,7 +61,26 @@ client/tp-player-web/
 
 ## Binary Format Parsing
 
-All multi-byte fields are little-endian.
+All multi-byte fields are little-endian. Every `DataView.getUint16()` / `getUint32()` call must pass `true` as the `littleEndian` parameter.
+
+### Server API: `/audit/get-file`
+
+All file access uses the existing server endpoint with **four required parameters**:
+
+```
+GET /audit/get-file?act={act}&type=rdp&rid={record_id}&f={filename}
+```
+
+| Parameter | Values | Description |
+|-----------|--------|-------------|
+| `act` | `size` or `read` | `size` returns file size as integer string; `read` streams file content |
+| `type` | `rdp` | Recording type |
+| `rid` | integer | Record ID |
+| `f` | filename | e.g., `tp-rdp.tpr`, `tp-rdp.tpk`, `tp-rdp-1.tpd` |
+
+For `read`, optional `offset` and `length` parameters support partial reads. Server returns HTTP 416 if `offset >= file_size`.
+
+Authentication: requires `_sid` cookie (sent automatically via `credentials: 'include'` on same-origin).
 
 ### `.tpr` Header (512 bytes)
 
@@ -103,9 +126,46 @@ Each packet: 12-byte header + payload.
 **Packet types:**
 
 - `0x12` (`RDP_POINTER`): `{ x: uint16, y: uint16, button: uint8, pressed: uint8 }`
-- `0x13` (`RDP_IMAGE`): `{ count: uint16, images: [{ destLeft, destTop, destRight, destBottom, width, height, bpp, format, compressed_size, raw_size, data }...] }`
-  - format `0` = raw pixels, `1` = RLE compressed bitmap, `2` = cache back-reference
-- `0x14` (`RDP_KEYFRAME`): `{ keyframe_info: 12B, pixels: zlib-compressed width*height*2 bytes (16-bit RGB) }`
+- `0x13` (`RDP_IMAGE`): `{ count: uint16 }` followed by `count` image entries, each:
+
+  **`TS_RECORD_RDP_IMAGE_INFO` struct (24 bytes):**
+  | Offset | Size | Field |
+  |--------|------|-------|
+  | 0 | 2 | destLeft |
+  | 2 | 2 | destTop |
+  | 4 | 2 | destRight |
+  | 6 | 2 | destBottom |
+  | 8 | 2 | width |
+  | 10 | 2 | height |
+  | 12 | 2 | bitsPerPixel (15 or 16) |
+  | 14 | 1 | format |
+  | 15 | 1 | _reserved |
+  | 16 | 4 | dat_len (raw/uncompressed data length) |
+  | 20 | 4 | zip_len (compressed length; 0 = not compressed) |
+
+  Followed by `zip_len > 0 ? zip_len : dat_len` bytes of image data.
+
+  **Format values:**
+  - `0` (`TS_RDP_IMG_RAW`): Raw pixels, `dat_len` bytes of pixel data
+  - `1` (`TS_RDP_IMG_BMP`): RLE-compressed bitmap — first zlib decompress (if `zip_len > 0`), then RLE decompress using `rle.js` WASM `bitmap_decompress_15()` or `bitmap_decompress_16()` based on `bitsPerPixel`
+  - `2` (`TS_RDP_IMG_ALT`): Cache back-reference — `dat_len` is repurposed as a cache index into previously decoded images; **no pixel data follows** in the packet payload
+
+  **Two-layer decompression for format 1:**
+  1. If `zip_len > 0`: zlib decompress the `zip_len` bytes → produces `dat_len` bytes
+  2. RLE bitmap decompress the result → produces `width * height * 4` RGBA pixels
+
+- `0x14` (`RDP_KEYFRAME`): `{ keyframe_info: 12B, pixels: zlib-compressed width*height*2 bytes }`
+  - Pixel format: RGB565 (5-bit R, 6-bit G, 5-bit B) or RGB555 (5-5-5) — must convert to RGBA for `putImageData()`
+
+### Image Cache Mechanism
+
+RDP bitmap updates frequently use cache references (format `2`) to avoid retransmitting unchanged screen regions.
+
+Implementation:
+- Maintain an array `imageCache[]` of previously decoded image data (raw RGBA pixels + rect info)
+- When processing format `0` or `1` images: decode pixels, store result in `imageCache[nextCacheIdx++]`, then render to frame buffer
+- When processing format `2`: read `dat_len` as cache index, look up `imageCache[dat_len]`, render the cached image to the dest rect
+- **Clear the cache at each keyframe** (packet type `0x14`) — cache is only valid between keyframes
 
 ## Fault Tolerance
 
@@ -117,15 +177,16 @@ Each packet: 12-byte header + payload.
 ## Rendering
 
 - **Off-screen canvas** as frame buffer (size = recording width × height)
-- Image update packets → RLE/zlib decompress → `putImageData()` to frame buffer rect
-- Keyframe packets → zlib decompress → full frame write
+- Image update packets → zlib decompress (if needed) → RLE decompress (if format=1) → convert RGB565/RGB555 to RGBA → `putImageData()` to frame buffer rect
+- Keyframe packets → zlib decompress → convert RGB565/RGB555 to RGBA → full frame write
+- **Pixel format conversion**: RGB565 `pixel = (r5 << 11) | (g6 << 5) | b5` → RGBA `[r5<<3, g6<<2, b5<<3, 255]`; RGB555 `pixel = (r5 << 10) | (g5 << 5) | b5` → RGBA `[r5<<3, g5<<3, b5<<3, 255]`
 - `requestAnimationFrame` copies frame buffer to display canvas
 - Mouse cursor rendered as a red dot overlay on the frame buffer
 
 ## Zoom & Pan
 
 - CSS `transform: scale()` + `transform-origin` on the canvas container
-- `Ctrl + scroll wheel`: zoom in/out (25% steps, range 25%–400%)
+- `Cmd + scroll wheel` (macOS) / `Ctrl + scroll wheel` (Windows): zoom in/out (25% steps, range 25%–400%)
 - Buttons: "Fit Window" (auto-scale to fill), "1:1" (original size), "+", "−"
 - Click-drag to pan when zoomed in
 
@@ -176,8 +237,8 @@ Since server code cannot be modified, the player is deployed as static files:
 ## Technology Stack
 
 - Pure HTML + CSS + Vanilla JS (no build tools, no framework)
-- `rle.js` — existing Emscripten WASM module for RLE bitmap decompression (copied from server static assets)
-- `DecompressionStream('deflate')` or pako.js for zlib decompression
+- `rle.js` — existing Emscripten WASM module for RLE bitmap decompression, copied from server at `server/www/teleport/static/js/audit/rle.js`. Uses `Module.ccall('bitmap_decompress_15', ...)` and `Module.ccall('bitmap_decompress_16', ...)` APIs via `Module._malloc` / `Module._free`
+- pako.js for zlib decompression (`pako.inflate()`, not `pako.inflateRaw()` — the data uses zlib wrapper format with 2-byte header + 4-byte checksum)
 - fetch API with `credentials: 'include'` for authenticated binary downloads
 
 ## Error Handling
@@ -189,6 +250,7 @@ Since server code cannot be modified, the player is deployed as static files:
 | Unsupported format (magic/ver mismatch) | Clear error message with format details |
 | Corrupt frames | Skip + mark on progress bar, continue playback |
 | `.tpd` file missing on server | Skip file, show warning, continue with available data |
+| HTTP 416 (offset out of range) | Treat as end-of-file, stop reading current `.tpd` |
 
 ## How This Solves Each Problem
 
