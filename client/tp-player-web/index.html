@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RDP 录屏回放</title>
+    <link rel="stylesheet" href="css/player.css">
+</head>
+<body>
+    <div id="top-bar">
+        <span id="meta-info">RDP 录屏回放</span>
+    </div>
+
+    <div id="canvas-container">
+        <div id="canvas-wrapper">
+            <canvas id="player-canvas"></canvas>
+        </div>
+        <div id="loading-overlay">
+            <div id="loading-text">加载中...</div>
+            <div id="loading-progress"></div>
+        </div>
+        <div id="error-overlay" style="display:none">
+            <div id="error-text"></div>
+            <button id="error-retry">重试</button>
+        </div>
+    </div>
+
+    <div id="control-bar">
+        <div id="controls-row-1">
+            <button id="btn-play" title="播放/暂停 (空格)">▶</button>
+            <div id="progress-container">
+                <div id="progress-bar">
+                    <div id="progress-played"></div>
+                    <div id="progress-handle"></div>
+                </div>
+            </div>
+            <span id="time-display">00:00 / 00:00</span>
+            <select id="speed-select">
+                <option value="1">1x</option>
+                <option value="2">2x</option>
+                <option value="4">4x</option>
+                <option value="8">8x</option>
+                <option value="16">16x</option>
+            </select>
+            <label id="skip-label">
+                <input type="checkbox" id="skip-silence" checked> 跳过静默
+            </label>
+        </div>
+        <div id="controls-row-2">
+            <button id="btn-fit" title="适应窗口">适应窗口</button>
+            <button id="btn-original" title="1:1 原始大小">1:1</button>
+            <button id="btn-zoom-in" title="放大">+</button>
+            <button id="btn-zoom-out" title="缩小">−</button>
+            <span id="zoom-display">100%</span>
+        </div>
+    </div>
+
+    <script src="lib/pako.min.js"></script>
+    <script src="lib/rle.js"></script>
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>
