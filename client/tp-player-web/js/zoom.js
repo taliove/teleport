@@ -11,6 +11,7 @@ export function createZoomController(canvasWrapper, canvasContainer, displayEl) 
     let panY = 0;
     let canvasWidth = 0;
     let canvasHeight = 0;
+    let fitMode = true; // track whether user is in auto-fit mode
 
     const MIN_SCALE = 0.25;
     const MAX_SCALE = 4.0;
@@ -30,12 +31,14 @@ export function createZoomController(canvasWrapper, canvasContainer, displayEl) 
     }
 
     function setScale(newScale) {
+        fitMode = false;
         scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, newScale));
         applyTransform();
         updateDisplay();
     }
 
     function fitToWindow() {
+        fitMode = true;
         const containerRect = canvasContainer.getBoundingClientRect();
         const scaleX = containerRect.width / canvasWidth;
         const scaleY = containerRect.height / canvasHeight;
@@ -47,6 +50,7 @@ export function createZoomController(canvasWrapper, canvasContainer, displayEl) 
     }
 
     function originalSize() {
+        fitMode = false;
         scale = 1.0;
         panX = 0;
         panY = 0;
@@ -111,5 +115,5 @@ export function createZoomController(canvasWrapper, canvasContainer, displayEl) 
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
 
-    return { init, fitToWindow, originalSize, zoomIn, zoomOut, get scale() { return scale; } };
+    return { init, fitToWindow, originalSize, zoomIn, zoomOut, get scale() { return scale; }, get isFitMode() { return fitMode; }, handleResize() { if (fitMode) fitToWindow(); else applyTransform(); } };
 }

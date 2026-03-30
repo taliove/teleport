@@ -41,6 +41,7 @@ body {
 #player-canvas {
     display: block;
     background: #263f6f;
+    image-rendering: pixelated;
 }
 
 #loading-overlay {

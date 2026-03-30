@@ -302,7 +302,7 @@ document.addEventListener('keydown', (e) => {
 errorRetry.addEventListener('click', () => init());
 
 // Window resize → re-fit zoom if in fit mode
-window.addEventListener('resize', () => zoom.fitToWindow());
+window.addEventListener('resize', () => zoom.handleResize());
 
 // Start
 init();

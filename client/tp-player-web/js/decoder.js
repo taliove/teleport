@@ -64,23 +64,23 @@ export function rleDecompress(inputData, width, height, bitsPerPixel) {
     // Copy input data to WASM heap
     Module.HEAPU8.set(inputData, inPtr);
 
-    // Call WASM function
-    // Signature: (outPtr, out_w, out_h, in_w, in_h, inPtr, inLen) -> int
-    Module.ccall(
-        funcName, 'number',
-        ['number', 'number', 'number', 'number', 'number', 'number', 'number'],
-        [outPtr, width, height, width, height, inPtr, inputSize]
-    );
+    try {
+        // Call WASM function
+        // Signature: (outPtr, out_w, out_h, in_w, in_h, inPtr, inLen) -> int
+        Module.ccall(
+            funcName, 'number',
+            ['number', 'number', 'number', 'number', 'number', 'number', 'number'],
+            [outPtr, width, height, width, height, inPtr, inputSize]
+        );
 
-    // Copy output from WASM heap
-    const output = new Uint8ClampedArray(outputSize);
-    output.set(new Uint8Array(Module.HEAPU8.buffer, outPtr, outputSize));
-
-    // Free WASM heap
-    Module._free(outPtr);
-    Module._free(inPtr);
-
-    return output;
+        // Copy output from WASM heap
+        const output = new Uint8ClampedArray(outputSize);
+        output.set(new Uint8Array(Module.HEAPU8.buffer, outPtr, outputSize));
+        return output;
+    } finally {
+        Module._free(outPtr);
+        Module._free(inPtr);
+    }
 }
 
 // Convert RGB565 raw pixel buffer to RGBA Uint8ClampedArray
@@ -164,6 +164,9 @@ export function decodeKeyframe(data, width, height) {
     let pixelData = data;
     if (data.byteLength !== expectedSize) {
         pixelData = zlibDecompress(data);
+    }
+    if (pixelData.byteLength < expectedSize) {
+        throw new Error(`Keyframe data too short: got ${pixelData.byteLength}, expected ${expectedSize}`);
     }
     return rgb565ToRgba(new Uint8Array(pixelData), width, height);
 }
