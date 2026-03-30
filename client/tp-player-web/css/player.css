@@ -44,6 +44,14 @@ body {
     -moz-osx-font-smoothing: grayscale;
 }
 
+#player-app {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
 /* === Top Bar (title bar) === */
 #top-bar {
     height: 44px;

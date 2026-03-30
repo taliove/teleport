@@ -676,6 +676,33 @@
         onError: function (err) { console.error('Playback error:', err); },
     });
 
+    // --- Preferences (localStorage) ---
+    var PREFS_KEY = 'tp_player_prefs';
+    function loadPrefs() {
+        try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; }
+        catch (e) { return {}; }
+    }
+    function savePrefs(update) {
+        try {
+            var prefs = Object.assign(loadPrefs(), update);
+            localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+        } catch (e) { /* quota or private mode */ }
+    }
+
+    // Apply saved preferences to UI
+    var savedPrefs = loadPrefs();
+    if (savedPrefs.speed) {
+        for (var pi = 0; pi < speedBtns.length; pi++) {
+            var isActive = parseInt(speedBtns[pi].getAttribute('data-speed'), 10) === savedPrefs.speed;
+            speedBtns[pi].classList.toggle('active', isActive);
+        }
+        player.setSpeed(savedPrefs.speed);
+    }
+    if (savedPrefs.skipSilence !== undefined) {
+        skipToggle.classList.toggle('active', savedPrefs.skipSilence);
+        player.setSkipSilence(savedPrefs.skipSilence);
+    }
+
     // --- Helpers ---
     function formatTime(ms) {
         var sec = Math.floor(ms / 1000);
@@ -774,6 +801,14 @@
             renderer.init(header.width, header.height);
             zoom.init(header.width, header.height);
 
+            // Apply saved zoom mode
+            if (savedPrefs.zoomMode === '1:1') {
+                zoom.originalSize();
+                updateZoomBtnState('1:1');
+            } else {
+                updateZoomBtnState('fit');
+            }
+
             showLoading('正在下载关键帧索引...');
             return downloader.readFile('tp-rdp.tpk').then(function (tpkBuf) {
                 var keyframes = tpkBuf ? parseKeyframes(tpkBuf) : [];
@@ -796,7 +831,20 @@
                     allPackets.sort(function (a, b) { return a.timeMs - b.timeMs; });
                     player.load(allPackets, keyframes, header.timeMs);
                     renderCorruptMarks(corruptedRanges, allPackets, header.timeMs);
-                    updateProgressBar(0, header.timeMs);
+
+                    // Seek to first keyframe to get a clean initial frame (avoids garbled tiles)
+                    var firstKfTime = -1;
+                    for (var fi = 0; fi < allPackets.length; fi++) {
+                        if (allPackets[fi].type === TYPE_RDP_KEYFRAME) {
+                            firstKfTime = allPackets[fi].timeMs;
+                            break;
+                        }
+                    }
+                    if (firstKfTime >= 0) {
+                        player.seek(firstKfTime);
+                    }
+
+                    updateProgressBar(player.currentMs, header.timeMs);
                     hideOverlays();
                     player.play();
                     btnPlay.textContent = '\u23F8';
@@ -847,14 +895,19 @@
     // Segmented speed control
     for (var si = 0; si < speedBtns.length; si++) {
         (function (btn) {
-            btn.addEventListener('click', function () { setActiveSpeed(btn); });
+            btn.addEventListener('click', function () {
+                setActiveSpeed(btn);
+                savePrefs({ speed: parseInt(btn.getAttribute('data-speed'), 10) });
+            });
         })(speedBtns[si]);
     }
 
     // Toggle switch — skip silence
     skipGroup.addEventListener('click', function () {
         skipToggle.classList.toggle('active');
-        player.setSkipSilence(skipToggle.classList.contains('active'));
+        var isActive = skipToggle.classList.contains('active');
+        player.setSkipSilence(isActive);
+        savePrefs({ skipSilence: isActive });
     });
 
     // Progress bar seek
@@ -881,8 +934,8 @@
     }
 
     // Zoom buttons
-    btnFit.addEventListener('click', function () { zoom.fitToWindow(); updateZoomBtnState('fit'); });
-    btnOriginal.addEventListener('click', function () { zoom.originalSize(); updateZoomBtnState('1:1'); });
+    btnFit.addEventListener('click', function () { zoom.fitToWindow(); updateZoomBtnState('fit'); savePrefs({ zoomMode: 'fit' }); });
+    btnOriginal.addEventListener('click', function () { zoom.originalSize(); updateZoomBtnState('1:1'); savePrefs({ zoomMode: '1:1' }); });
     btnZoomIn.addEventListener('click', function () { zoom.zoomIn(); updateZoomBtnState(null); });
     btnZoomOut.addEventListener('click', function () { zoom.zoomOut(); updateZoomBtnState(null); });
 
