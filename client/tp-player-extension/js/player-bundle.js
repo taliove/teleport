@@ -589,7 +589,7 @@
         function fitToWindow() {
             fitMode = true;
             var r = canvasContainer.getBoundingClientRect();
-            scale = Math.min(r.width / canvasWidth, r.height / canvasHeight, 1.0);
+            scale = Math.min(r.width / canvasWidth, r.height / canvasHeight);
             panX = 0; panY = 0; applyTransform(); updateDisplay();
         }
         function originalSize() { fitMode = false; scale = 1.0; panX = 0; panY = 0; applyTransform(); updateDisplay(); }

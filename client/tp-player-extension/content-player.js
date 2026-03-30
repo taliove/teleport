@@ -33,6 +33,9 @@
         if (taken) return;
         taken = true;
 
+        // Stop original page from loading (prevents stray scripts/errors)
+        window.stop();
+
         // Clear the page
         document.head.innerHTML = '';
         document.body.innerHTML = '';
