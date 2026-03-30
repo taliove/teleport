@@ -1105,6 +1105,21 @@ export function createPlayer(renderer, imageCache, callbacks) {
         packetIndex = 0;
     }
 
+    // Hot-merge updated packet list without resetting playback position.
+    // Used when background .tpd files finish downloading.
+    function updatePackets(parsedPackets, parsedKeyframes, durationMs) {
+        const prevMs = currentMs;
+        packets = parsedPackets;
+        keyframes = parsedKeyframes;
+        totalMs = durationMs;
+        // Restore packetIndex to the correct position for the current time
+        packetIndex = findPacketIndex(prevMs);
+        // Skip past any packets we've already played
+        while (packetIndex < packets.length && packets[packetIndex].timeMs < prevMs) {
+            packetIndex++;
+        }
+    }
+
     function play() {
         if (playing) return;
         playing = true;
@@ -1133,7 +1148,6 @@ export function createPlayer(renderer, imageCache, callbacks) {
     }
 
     function seek(targetMs) {
-        const wasPlaying = playing;
         pause();
 
         // Find nearest keyframe before targetMs
@@ -1149,7 +1163,6 @@ export function createPlayer(renderer, imageCache, callbacks) {
         imageCache.clear();
 
         if (kfIndex >= 0) {
-            // Find the packet index corresponding to this keyframe's time
             const kfTimeMs = keyframes[kfIndex].timeMs;
             packetIndex = findPacketIndex(kfTimeMs);
         } else {
@@ -1161,7 +1174,6 @@ export function createPlayer(renderer, imageCache, callbacks) {
             ? packets[packetIndex].timeMs
             : 0;
 
-        // Process packets up to target without delay
         while (packetIndex < packets.length && packets[packetIndex].timeMs <= targetMs) {
             processPacket(packetIndex);
             packetIndex++;
@@ -1170,9 +1182,7 @@ export function createPlayer(renderer, imageCache, callbacks) {
 
         renderer.flush();
         if (callbacks.onProgress) callbacks.onProgress(currentMs, totalMs);
-
-        // Resume only if was playing before seek
-        if (wasPlaying) play();
+        // Note: caller is responsible for calling play() after seek if desired
     }
 
     function findPacketIndex(timeMs) {
@@ -1284,6 +1294,7 @@ export function createPlayer(renderer, imageCache, callbacks) {
 
     return {
         load,
+        updatePackets,
         play,
         pause,
         togglePlayPause,
@@ -1640,8 +1651,11 @@ async function init() {
             for (const pkt of iteratePackets(tpdBuf, corruptedRanges)) {
                 allPackets.push(pkt);
             }
-            allPackets.sort((a, b) => a.timeMs - b.timeMs);
-            player.load(allPackets, keyframes, header.timeMs);
+            // Create a sorted copy (immutable) and hot-merge into player
+            const sorted = [...allPackets].sort((a, b) => a.timeMs - b.timeMs);
+            allPackets.length = 0;
+            allPackets.push(...sorted);
+            player.updatePackets(allPackets, keyframes, header.timeMs);
             renderCorruptMarks(corruptedRanges, allPackets, header.timeMs);
         }
 
@@ -1716,11 +1730,15 @@ document.addEventListener('keydown', (e) => {
             break;
         case 'ArrowLeft':
             e.preventDefault();
-            player.seek(Math.max(0, player.currentMs - 10000));
+            { const wasP = player.playing;
+              player.seek(Math.max(0, player.currentMs - 10000));
+              if (wasP) player.play(); }
             break;
         case 'ArrowRight':
             e.preventDefault();
-            player.seek(Math.min(player.totalMs, player.currentMs + 10000));
+            { const wasP = player.playing;
+              player.seek(Math.min(player.totalMs, player.currentMs + 10000));
+              if (wasP) player.play(); }
             break;
         case 'Equal': // + key → speed up
         case 'NumpadAdd': {
