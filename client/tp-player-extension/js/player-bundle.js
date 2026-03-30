@@ -636,6 +636,7 @@
         return;
     }
 
+    // --- DOM references ---
     var canvas = document.getElementById('player-canvas');
     var canvasWrapper = document.getElementById('canvas-wrapper');
     var canvasContainer = document.getElementById('canvas-container');
@@ -646,8 +647,10 @@
     var errorText = document.getElementById('error-text');
     var metaInfo = document.getElementById('meta-info');
     var btnPlay = document.getElementById('btn-play');
-    var speedSelect = document.getElementById('speed-select');
-    var skipSilenceEl = document.getElementById('skip-silence');
+    var speedGroup = document.getElementById('speed-group');
+    var speedBtns = speedGroup.querySelectorAll('.seg-btn');
+    var skipToggle = document.getElementById('skip-toggle');
+    var skipGroup = document.getElementById('skip-group');
     var progressContainer = document.getElementById('progress-container');
     var progressPlayed = document.getElementById('progress-played');
     var progressHandle = document.getElementById('progress-handle');
@@ -659,7 +662,9 @@
     var btnZoomOut = document.getElementById('btn-zoom-out');
     var zoomDisplay = document.getElementById('zoom-display');
     var errorRetry = document.getElementById('error-retry');
+    var toastContainer = document.getElementById('toast-container');
 
+    // --- Core instances ---
     var downloader = createDownloader(serverBase, rid);
     var imageCache = createImageCache();
     var renderer = createRenderer(canvas);
@@ -671,6 +676,7 @@
         onError: function (err) { console.error('Playback error:', err); },
     });
 
+    // --- Helpers ---
     function formatTime(ms) {
         var sec = Math.floor(ms / 1000);
         var m = Math.floor(sec / 60), s = sec % 60;
@@ -697,7 +703,21 @@
         loadingProgress.textContent = progress || '';
     }
 
-    function hideOverlays() { loadingOverlay.style.display = 'none'; errorOverlay.style.display = 'none'; }
+    function hideOverlays() {
+        loadingOverlay.style.display = 'none';
+        errorOverlay.style.display = 'none';
+    }
+
+    function showToast(msg, type) {
+        var toast = document.createElement('div');
+        toast.className = 'toast ' + (type || 'info');
+        toast.textContent = msg;
+        toastContainer.appendChild(toast);
+        setTimeout(function () {
+            toast.classList.add('hiding');
+            setTimeout(function () { toast.remove(); }, 300);
+        }, 4000);
+    }
 
     function renderCorruptMarks(corruptedRanges, pkts, total) {
         progressBar.querySelectorAll('.corrupt-mark').forEach(function (el) { el.remove(); });
@@ -718,6 +738,29 @@
         }
     }
 
+    // --- Speed control ---
+    function setActiveSpeed(targetBtn) {
+        for (var i = 0; i < speedBtns.length; i++) speedBtns[i].classList.remove('active');
+        targetBtn.classList.add('active');
+        player.setSpeed(parseInt(targetBtn.getAttribute('data-speed'), 10));
+    }
+
+    function cycleSpeed(dir) {
+        var activeIdx = -1;
+        for (var i = 0; i < speedBtns.length; i++) {
+            if (speedBtns[i].classList.contains('active')) { activeIdx = i; break; }
+        }
+        var nextIdx = activeIdx + dir;
+        if (nextIdx >= 0 && nextIdx < speedBtns.length) setActiveSpeed(speedBtns[nextIdx]);
+    }
+
+    // --- Zoom active-state tracking ---
+    function updateZoomBtnState(mode) {
+        btnFit.classList.toggle('active', mode === 'fit');
+        btnOriginal.classList.toggle('active', mode === '1:1');
+    }
+
+    // --- Init & load ---
     function init() {
         showLoading('正在加载 WASM 模块...');
         initDecoder().then(function () {
@@ -758,18 +801,27 @@
                     player.play();
                     btnPlay.textContent = '\u23F8';
 
-                    // Background-download remaining files
+                    if (corruptedRanges.length > 0) {
+                        showToast('检测到 ' + corruptedRanges.length + ' 处数据损坏，已自动跳过', 'warning');
+                    }
+
+                    // Background-download remaining files (non-blocking)
                     var chain = Promise.resolve();
                     for (var f = 2; f <= header.datFileCount; f++) {
                         (function (idx) {
                             chain = chain.then(function () {
                                 return downloader.readFileWithProgress('tp-rdp-' + idx + '.tpd', function () {}).then(function (buf) {
-                                    if (!buf) { console.warn('Skipping missing file: tp-rdp-' + idx + '.tpd'); return; }
+                                    if (!buf) {
+                                        showToast('数据文件 ' + idx + ' 不存在，已跳过', 'warning');
+                                        return;
+                                    }
                                     var pkts = iteratePackets(buf, corruptedRanges);
                                     for (var j = 0; j < pkts.length; j++) allPackets.push(pkts[j]);
                                     allPackets.sort(function (a, b) { return a.timeMs - b.timeMs; });
                                     player.updatePackets(allPackets, keyframes, header.timeMs);
                                     renderCorruptMarks(corruptedRanges, allPackets, header.timeMs);
+                                }).catch(function (err) {
+                                    showToast('数据文件 ' + idx + ' 加载失败: ' + err.message, 'warning');
                                 });
                             });
                         })(f);
@@ -786,23 +838,41 @@
     }
 
     // --- UI event handlers ---
+
+    // Play/Pause
     btnPlay.addEventListener('click', function () {
         btnPlay.textContent = player.togglePlayPause() ? '\u23F8' : '\u25B6';
     });
-    speedSelect.addEventListener('change', function () {
-        player.setSpeed(parseInt(speedSelect.value, 10));
-    });
-    skipSilenceEl.addEventListener('change', function () {
-        player.setSkipSilence(skipSilenceEl.checked);
+
+    // Segmented speed control
+    for (var si = 0; si < speedBtns.length; si++) {
+        (function (btn) {
+            btn.addEventListener('click', function () { setActiveSpeed(btn); });
+        })(speedBtns[si]);
+    }
+
+    // Toggle switch — skip silence
+    skipGroup.addEventListener('click', function () {
+        skipToggle.classList.toggle('active');
+        player.setSkipSilence(skipToggle.classList.contains('active'));
     });
 
+    // Progress bar seek
     var seeking = false, wasPlayingBeforeSeek = false;
     progressContainer.addEventListener('mousedown', function (e) {
-        seeking = true; wasPlayingBeforeSeek = player.playing; player.pause(); seekToPosition(e);
+        seeking = true;
+        wasPlayingBeforeSeek = player.playing;
+        player.pause();
+        progressHandle.classList.add('active');
+        seekToPosition(e);
     });
     window.addEventListener('mousemove', function (e) { if (seeking) seekToPosition(e); });
     window.addEventListener('mouseup', function () {
-        if (seeking) { seeking = false; if (wasPlayingBeforeSeek) { player.play(); btnPlay.textContent = '\u23F8'; } }
+        if (seeking) {
+            seeking = false;
+            progressHandle.classList.remove('active');
+            if (wasPlayingBeforeSeek) { player.play(); btnPlay.textContent = '\u23F8'; }
+        }
     });
     function seekToPosition(e) {
         var rect = progressBar.getBoundingClientRect();
@@ -810,38 +880,38 @@
         player.seek(pct * player.totalMs);
     }
 
-    btnFit.addEventListener('click', function () { zoom.fitToWindow(); });
-    btnOriginal.addEventListener('click', function () { zoom.originalSize(); });
-    btnZoomIn.addEventListener('click', function () { zoom.zoomIn(); });
-    btnZoomOut.addEventListener('click', function () { zoom.zoomOut(); });
+    // Zoom buttons
+    btnFit.addEventListener('click', function () { zoom.fitToWindow(); updateZoomBtnState('fit'); });
+    btnOriginal.addEventListener('click', function () { zoom.originalSize(); updateZoomBtnState('1:1'); });
+    btnZoomIn.addEventListener('click', function () { zoom.zoomIn(); updateZoomBtnState(null); });
+    btnZoomOut.addEventListener('click', function () { zoom.zoomOut(); updateZoomBtnState(null); });
 
+    // Keyboard shortcuts
     document.addEventListener('keydown', function (e) {
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
         switch (e.code) {
-            case 'Space': e.preventDefault(); btnPlay.click(); break;
+            case 'Space':
+                e.preventDefault(); btnPlay.click(); break;
             case 'ArrowLeft':
                 e.preventDefault();
-                var wl = player.playing; player.seek(Math.max(0, player.currentMs - 10000)); if (wl) player.play();
+                var wl = player.playing;
+                player.seek(Math.max(0, player.currentMs - 10000));
+                if (wl) player.play();
                 break;
             case 'ArrowRight':
                 e.preventDefault();
-                var wr = player.playing; player.seek(Math.min(player.totalMs, player.currentMs + 10000)); if (wr) player.play();
+                var wr = player.playing;
+                player.seek(Math.min(player.totalMs, player.currentMs + 10000));
+                if (wr) player.play();
                 break;
             case 'Equal': case 'NumpadAdd':
-                e.preventDefault();
-                if (speedSelect.selectedIndex < speedSelect.options.length - 1) {
-                    speedSelect.selectedIndex++; speedSelect.dispatchEvent(new Event('change'));
-                }
-                break;
+                e.preventDefault(); cycleSpeed(1); break;
             case 'Minus': case 'NumpadSubtract':
-                e.preventDefault();
-                if (speedSelect.selectedIndex > 0) {
-                    speedSelect.selectedIndex--; speedSelect.dispatchEvent(new Event('change'));
-                }
-                break;
+                e.preventDefault(); cycleSpeed(-1); break;
         }
     });
 
+    // Retry & resize
     errorRetry.addEventListener('click', function () { init(); });
     window.addEventListener('resize', function () { zoom.handleResize(); });
 
