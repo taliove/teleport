@@ -1,0 +1,3 @@
+[submodule "client/tp-player-extension"]
+	path = client/tp-player-extension
+	url = https://github.com/taliove/tp-player-extension.git
